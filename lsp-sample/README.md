@@ -20,8 +20,7 @@ It also includes an End-to-End test.
 │   │   └── extension.ts // Language Client entry point
 ├── package.json // The extension manifest.
 └── server // Language Server
-    └── src
-        └── server.ts // Language Server entry point
+    └── src // dotnet core console project
 ```
 
 ## Compile and Run

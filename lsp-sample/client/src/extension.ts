@@ -11,7 +11,8 @@ import {
 	LanguageClient,
 	LanguageClientOptions,
 	ServerOptions,
-	TransportKind
+	ExecutableOptions,
+	Executable
 } from 'vscode-languageclient';
 
 let client: LanguageClient;
@@ -19,21 +20,15 @@ let client: LanguageClient;
 export function activate(context: ExtensionContext) {
 	// The server is implemented in node
 	let serverModule = context.asAbsolutePath(
-		path.join('server', 'out', 'server.js')
+		path.join('server', 'out', 'SampleServer.dll')
 	);
-	// The debug options for the server
-	// --inspect=6009: runs the server in Node's Inspector mode so VS Code can attach to the server for debugging
-	let debugOptions = { execArgv: ['--nolazy', '--inspect=6009'] };
+	let commandOptions: ExecutableOptions = { stdio: 'pipe', detached: false };
 
 	// If the extension is launched in debug mode then the debug server options are used
 	// Otherwise the run options are used
 	let serverOptions: ServerOptions = {
-		run: { module: serverModule, transport: TransportKind.ipc },
-		debug: {
-			module: serverModule,
-			transport: TransportKind.ipc,
-			options: debugOptions
-		}
+		run: <Executable>{ command: "dotnet", args: [serverModule], options: commandOptions },
+		debug: <Executable>{ command: "dotnet", args: [serverModule], options: commandOptions }
 	};
 
 	// Options to control the language client
