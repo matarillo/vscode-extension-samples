@@ -111,7 +111,7 @@ namespace SampleServer
             Logger.Instance.Log("We received an file change event");
         }
 
-        protected override Result<ArrayOrObject<CompletionItem, CompletionList>, ResponseError> Completion(TextDocumentPositionParams @params)
+        protected override Result<CompletionResult, ResponseError> Completion(CompletionParams @params)
         {
             var array = new[]
             {
@@ -128,7 +128,7 @@ namespace SampleServer
                     data = 2
                 }
             };
-            return Result<ArrayOrObject<CompletionItem, CompletionList>, ResponseError>.Success(array);
+            return Result<CompletionResult, ResponseError>.Success(array);
         }
 
         protected override Result<CompletionItem, ResponseError> ResolveCompletionItem(CompletionItem @params)
