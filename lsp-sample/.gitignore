@@ -4,3 +4,5 @@ client/server
 .vscode-test
 server/src/bin
 server/src/obj
+.vs
+.vscode

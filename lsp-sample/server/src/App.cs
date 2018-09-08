@@ -39,14 +39,18 @@ namespace SampleServer
         {
             Logger.Instance.Attach(connection);
 
-            connection.RequestHandlers.Set<RequestMessage<InitializeParams>, ResponseMessage<InitializeResult, ResponseError<InitializeErrorData>>>("initialize", OnInitialize);
-
             documents.DidClose += Documents_DidClose;
             documents.DidChangeContent += Documents_DidChangeContent;
-
             // Make the text document manager listen on the connection
             // for open, change and close text document events
             documents.Listen(connection);
+
+            connection.RequestHandlers.Set<RequestMessage<InitializeParams>, ResponseMessage<InitializeResult, ResponseError<InitializeErrorData>>>("initialize", OnInitialize);
+            connection.NotificationHandlers.Set<VoidNotificationMessage>("initialized", OnInitialized);
+            connection.NotificationHandlers.Set<NotificationMessage<DidChangeConfigurationParams>>("workspace/didChangeConfiguration", OnDidChangeConfiguration);
+            connection.NotificationHandlers.Set<NotificationMessage<DidChangeWatchedFilesParams>>("workspace/didChangeWatchedFiles", OnDidChangeWatchedFiles);
+            connection.RequestHandlers.Set<RequestMessage<CompletionParams>, ResponseMessage<CompletionResult, ResponseError>>("textDocument/completion", OnCompletion);
+            connection.RequestHandlers.Set<RequestMessage<CompletionItem>, ResponseMessage<CompletionItem, ResponseError>>("completionItem/resolve", OnResolveCompletionItem);
             // Listen on the connection
             return connection.Listen();
         }
@@ -80,7 +84,7 @@ namespace SampleServer
             };
         }
 
-        private void OnInitialized(VoidRequestMessage message)
+        private void OnInitialized(VoidNotificationMessage message)
         {
             if (hasConfigurationCapability)
             {
@@ -105,7 +109,7 @@ namespace SampleServer
 
         private void OnDidChangeWorkspaceFolders(NotificationMessage<DidChangeWorkspaceFoldersParams> message)
         {
-            Console.Error.WriteLine("Workspace folder change event received.");
+            Logger.Instance.Log("Workspace folder change event received.");
         }
 
         private void OnDidChangeConfiguration(NotificationMessage<DidChangeConfigurationParams> message)
@@ -240,15 +244,54 @@ namespace SampleServer
             });
         }
 
-        // connection.onDidChangeWatchedFiles
+        private void OnDidChangeWatchedFiles(NotificationMessage<DidChangeWatchedFilesParams> message)
+        {
+            // Monitored files have change in VSCode
+            Logger.Instance.Log("We received an file change event");
+        }
 
         // This handler provides the initial list of the completion items.
-        // connection.onCompletion
+        private ResponseMessage<CompletionResult, ResponseError> OnCompletion(RequestMessage<CompletionParams> message, CancellationToken token)
+        {
+            return new ResponseMessage<CompletionResult, ResponseError>
+            {
+                result = new[]
+                {
+                    new CompletionItem
+                    {
+                        label = "TypeScript",
+                        kind = CompletionItemKind.Text,
+                        data = 1
+                    },
+                    new CompletionItem
+                    {
+                        label = "JavaScript",
+                        kind = CompletionItemKind.Text,
+                        data = 2
+                    }
+                }
+            };
+        }
 
         // This handler resolve additional information for the item selected in
         // the completion list.
-        // connection.onCompletionResolve
-
-        // https://github.com/Microsoft/vscode-extension-samples/blob/master/lsp-sample/server/src/server.ts
+        private ResponseMessage<CompletionItem, ResponseError> OnResolveCompletionItem(RequestMessage<CompletionItem> message, CancellationToken token)
+        {
+            var item = message.@params;
+            if (item.data == 1)
+            {
+                item.detail = "TypeScript details";
+                item.documentation = "TypeScript documentation";
+            }
+            else if (item.data == 2)
+            {
+                item.detail = "JavaScript details";
+                item.documentation = "JavaScript documentation";
+            }
+            return new ResponseMessage<CompletionItem, ResponseError>
+            {
+                result = item
+            };
+        }
     }
 }
