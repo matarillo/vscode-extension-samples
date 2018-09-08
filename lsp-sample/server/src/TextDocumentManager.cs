@@ -1,105 +1,152 @@
-﻿using LanguageServer.Parameters.TextDocument;
+﻿using LanguageServer;
+using LanguageServer.Parameters;
+using LanguageServer.Parameters.General;
+using LanguageServer.Parameters.TextDocument;
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Threading;
 
 namespace SampleServer
 {
     public class TextDocumentManager
     {
-        private readonly List<TextDocumentItem> _all = new List<TextDocumentItem>();
-        public IReadOnlyList<TextDocumentItem> All => _all;
+        private readonly Dictionary<Uri, TextDocument> _documents;
 
-        public void Add(TextDocumentItem document)
+        public TextDocumentManager()
         {
-            if (_all.Any(x => x.uri == document.uri))
-            {
-                return;
-            }
-            _all.Add(document);
-            OnChanged(document);
+            _documents = new Dictionary<Uri, TextDocument>();
         }
 
-        public void Change(Uri uri, long version, TextDocumentContentChangeEvent[] changeEvents)
+        public TextDocumentSyncKind SyncKind => TextDocumentSyncKind.Full;
+
+        public event EventHandler<TextDocumentChangedEventArgs> DidChangeContent;
+        public event EventHandler<TextDocumentChangedEventArgs> DidOpen;
+        public event EventHandler<TextDocumentWillSaveEventArgs> WillSave;
+        public event RequestHandler<TextDocumentWillSaveEventArgs, TextEdit[], ResponseError> WillSaveWaitUntil;
+        public event EventHandler<TextDocumentChangedEventArgs> DidSave;
+        public event EventHandler<TextDocumentChangedEventArgs> DidClose;
+
+        protected virtual void OnDidChangeContent(TextDocumentChangedEventArgs args)
         {
-            var index = _all.FindIndex(x => x.uri == uri);
-            if (index < 0)
-            {
-                return;
-            }
-            var document = _all[index];
-            if (document.version >= version)
-            {
-                return;
-            }
-            foreach(var ev in changeEvents)
-            {
-                Apply(document, ev);
-            }
-            document.version = version;
-            OnChanged(document);
+            DidChangeContent?.Invoke(this, args);
         }
 
-        private void Apply(TextDocumentItem document, TextDocumentContentChangeEvent ev)
+        protected virtual void OnDidOpen(TextDocumentChangedEventArgs args)
         {
-            if (ev.range != null)
-            {
-                var startPos = GetPosition(document.text, (int)ev.range.start.line, (int)ev.range.start.character);
-                var endPos = GetPosition(document.text, (int)ev.range.end.line, (int)ev.range.end.character);
-                var newText = document.text.Substring(0, startPos) + ev.text + document.text.Substring(endPos);
-                document.text = newText;
-            }
-            else
-            {
-                document.text = ev.text;
-            }
+            DidOpen?.Invoke(this, args);
         }
 
-        private static int GetPosition(string text, int line, int character)
+        protected virtual void OnWillSave(TextDocumentWillSaveEventArgs args)
         {
-            var pos = 0;
-            for (; 0 <= line; line--)
+            WillSave?.Invoke(this, args);
+        }
+
+        protected virtual Result<TextEdit[], ResponseError> OnWillSaveWaitUntil(TextDocumentWillSaveEventArgs args, CancellationToken token)
+        {
+            return WillSaveWaitUntil?.Invoke(this, args, token);
+        }
+
+        protected virtual void OnDidSave(TextDocumentChangedEventArgs args)
+        {
+            DidSave?.Invoke(this, args);
+        }
+
+        protected virtual void OnDidClose(TextDocumentChangedEventArgs args)
+        {
+            DidClose?.Invoke(this, args);
+        }
+
+
+        public TextDocument this[Uri uri] => _documents[uri];
+
+        public IReadOnlyCollection<TextDocument> All => _documents.Values;
+
+        public IReadOnlyCollection<Uri> Keys => _documents.Keys;
+
+        public void Listen(Connection connection)
+        {
+            // connection.__textDocumentSync = TextDocumentSyncKind.Full;
+            connection.NotificationHandlers.Set<NotificationMessage<DidOpenTextDocumentParams>>("textDocument/didOpen", DidOpenTextDocument);
+            connection.NotificationHandlers.Set<NotificationMessage<DidChangeTextDocumentParams>>("textDocument/didChange", DidChangeTextDocument);
+            connection.NotificationHandlers.Set<NotificationMessage<DidCloseTextDocumentParams>>("textDocument/didClose", DidCloseTextDocument);
+            connection.NotificationHandlers.Set<NotificationMessage<WillSaveTextDocumentParams>>("textDocument/willSave", WillSaveTextDocument);
+            connection.RequestHandlers.Set<RequestMessage<WillSaveTextDocumentParams>, ResponseMessage<TextEdit[], ResponseError>>("textDocument/willSaveWaitUntil", WillSaveWaitUntilTextDocument);
+            connection.NotificationHandlers.Set<NotificationMessage<DidSaveTextDocumentParams>>("textDocument/didSave", DidSaveTextDocument);
+        }
+
+        private void DidOpenTextDocument(NotificationMessage<DidOpenTextDocumentParams> message)
+        {
+            var td = message.@params.textDocument;
+            var document = new TextDocument(td.uri, td.languageId, td.version, td.text);
+            _documents[td.uri] = document;
+            var toFire = new TextDocumentChangedEventArgs(document);
+            OnDidOpen(toFire);
+            OnDidChangeContent(toFire);
+        }
+
+        private void DidChangeTextDocument(NotificationMessage<DidChangeTextDocumentParams> message)
+        {
+            var td = message.@params.textDocument;
+            var changes = message.@params.contentChanges;
+            var last = changes?.Length > 0 ? changes[changes.Length - 1] : null;
+            if (last != null)
             {
-                var lf = text.IndexOf('\n', pos);
-                if (lf < 0)
+                if (_documents.TryGetValue(td.uri, out var document))
                 {
-                    return text.Length;
+                    document.Update(last, td.version);
+                    OnDidChangeContent(new TextDocumentChangedEventArgs(document));
                 }
-                pos = lf + 1;
             }
-            var linefeed = text.IndexOf('\n', pos);
-            var max = 0;
-            if (linefeed < 0)
-            {
-                max = text.Length;
-            }
-            else if (linefeed > 0 && text[linefeed - 1] == '\r')
-            {
-                max = linefeed - 1;
-            }
-            else
-            {
-                max = linefeed;
-            }
-            pos += character;
-            return (pos < max) ? pos : max;
         }
 
-        public void Remove(Uri uri)
+        private void DidCloseTextDocument(NotificationMessage<DidCloseTextDocumentParams> message)
         {
-            var index = _all.FindIndex(x => x.uri == uri);
-            if (index < 0)
+            var td = message.@params.textDocument;
+            if (_documents.TryGetValue(td.uri, out var document))
             {
-                return;
+                _documents.Remove(td.uri);
+                OnDidClose(new TextDocumentChangedEventArgs(document));
             }
-            _all.RemoveAt(index);
         }
 
-        public event EventHandler<TextDocumentChangedEventArgs> Changed;
-
-        protected virtual void OnChanged(TextDocumentItem document)
+        private void WillSaveTextDocument(NotificationMessage<WillSaveTextDocumentParams> message)
         {
-            Changed?.Invoke(this, new TextDocumentChangedEventArgs(document));
+            var td = message.@params.textDocument;
+            var reason = message.@params.reason;
+            if (_documents.TryGetValue(td.uri, out var document))
+            {
+                OnWillSave(new TextDocumentWillSaveEventArgs(document, reason));
+            }
+        }
+
+        private ResponseMessage<TextEdit[], ResponseError> WillSaveWaitUntilTextDocument(RequestMessage<WillSaveTextDocumentParams> message, CancellationToken token)
+        {
+            var td = message.@params.textDocument;
+            var reason = message.@params.reason;
+            var result = default(Result<TextEdit[], ResponseError>);
+            if (_documents.TryGetValue(td.uri, out var document))
+            {
+                result = OnWillSaveWaitUntil(new TextDocumentWillSaveEventArgs(document, reason), token);
+            }
+            if (result == null)
+            {
+                result = Result<TextEdit[], ResponseError>.Success(new TextEdit[] { });
+            }
+            return new ResponseMessage<TextEdit[], ResponseError>
+            {
+                id = message.id,
+                result = result.SuccessValue,
+                error = result.ErrorValue
+            };
+        }
+
+        private void DidSaveTextDocument(NotificationMessage<DidSaveTextDocumentParams> message)
+        {
+            var td = message.@params.textDocument;
+            if (_documents.TryGetValue(td.uri, out var document))
+            {
+                OnDidSave(new TextDocumentChangedEventArgs(document));
+            }
         }
     }
 }

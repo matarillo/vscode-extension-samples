@@ -1,17 +1,14 @@
-﻿using LanguageServer.Parameters.TextDocument;
-using System;
+﻿using System;
 
 namespace SampleServer
 {
     public class TextDocumentChangedEventArgs : EventArgs
     {
-        private readonly TextDocumentItem _document;
-
-        public TextDocumentChangedEventArgs(TextDocumentItem document)
+        public TextDocumentChangedEventArgs(TextDocument document)
         {
-            _document = document;
+            Document = document;
         }
 
-        public TextDocumentItem Document => _document;
+        public TextDocument Document { get; }
     }
 }

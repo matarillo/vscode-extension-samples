@@ -1,157 +1,254 @@
 using LanguageServer;
 using LanguageServer.Client;
-using LanguageServer.Json;
 using LanguageServer.Parameters;
+using LanguageServer.Parameters.Client;
 using LanguageServer.Parameters.General;
 using LanguageServer.Parameters.TextDocument;
 using LanguageServer.Parameters.Workspace;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SampleServer
 {
-    public class App : ServiceConnection
+    public class App
     {
-        private Uri _workerSpaceRoot;
-        private int _maxNumberOfProblems = 100; // WORKAROUND
-        private TextDocumentManager _documents;
+        private readonly Connection connection;
+        private readonly TextDocumentManager documents;
+        private readonly Proxy proxy;
+        private bool hasConfigurationCapability = false;
+        private bool hasWorkspaceFolderCapability = false;
+        private bool hasDiagnosticRelatedInformationCapability = false;
+
+        private readonly Dictionary<Uri, Task<ExampleSettings>> documentSettings;
+
+        private ExampleSettings globalSettings = ExampleSettings.defaultSettings;
 
         public App(Stream input, Stream output)
-            : base(input, output)
         {
-            _documents = new TextDocumentManager();
-            _documents.Changed += Documents_Changed;
+            connection = new Connection(input, output);
+            proxy = new Proxy(connection);
+            documents = new TextDocumentManager();
+            documentSettings = new Dictionary<Uri, Task<ExampleSettings>>();
         }
 
-        private void Documents_Changed(object sender, TextDocumentChangedEventArgs e)
+        public Task Listen()
         {
-            ValidateTextDocument(e.Document);
+            Logger.Instance.Attach(connection);
+
+            connection.RequestHandlers.Set<RequestMessage<InitializeParams>, ResponseMessage<InitializeResult, ResponseError<InitializeErrorData>>>("initialize", OnInitialize);
+
+            documents.DidClose += Documents_DidClose;
+            documents.DidChangeContent += Documents_DidChangeContent;
+
+            // Make the text document manager listen on the connection
+            // for open, change and close text document events
+            documents.Listen(connection);
+            // Listen on the connection
+            return connection.Listen();
         }
 
-        protected override Result<InitializeResult, ResponseError<InitializeErrorData>> Initialize(InitializeParams @params)
+        private ResponseMessage<InitializeResult, ResponseError<InitializeErrorData>> OnInitialize(RequestMessage<InitializeParams> message, CancellationToken token)
         {
-            _workerSpaceRoot = @params.rootUri;
-            var result = new InitializeResult
+            var capabilities = message.@params.capabilities;
+
+            // Does the client support the `workspace/configuration` request?
+            // If not, we will fall back using global settings
+            hasConfigurationCapability =
+                capabilities?.workspace?.configuration ?? false;
+            hasWorkspaceFolderCapability =
+                capabilities?.workspace?.workspaceFolders ?? false;
+            hasDiagnosticRelatedInformationCapability =
+                capabilities?.textDocument?.publishDiagnostics?.relatedInformation ?? false;
+
+            return new ResponseMessage<InitializeResult, ResponseError<InitializeErrorData>>
             {
-                capabilities = new ServerCapabilities
+                result = new InitializeResult
                 {
-                    textDocumentSync = TextDocumentSyncKind.Full,
-                    completionProvider = new CompletionOptions
+                    capabilities = new ServerCapabilities
                     {
-                        resolveProvider = true
+                        textDocumentSync = TextDocumentSyncKind.Full,
+                        completionProvider = new CompletionOptions
+                        {
+                            resolveProvider = true
+                        }
                     }
                 }
             };
-            return Result<InitializeResult, ResponseError<InitializeErrorData>>.Success(result);
         }
 
-        protected override void DidOpenTextDocument(DidOpenTextDocumentParams @params)
+        private void OnInitialized(VoidRequestMessage message)
         {
-            _documents.Add(@params.textDocument);
-            Logger.Instance.Log($"{@params.textDocument.uri} opened.");
-        }
-
-        protected override void DidChangeTextDocument(DidChangeTextDocumentParams @params)
-        {
-            _documents.Change(@params.textDocument.uri, @params.textDocument.version, @params.contentChanges);
-            Logger.Instance.Log($"{@params.textDocument.uri} changed.");
-        }
-
-        protected override void DidCloseTextDocument(DidCloseTextDocumentParams @params)
-        {
-            _documents.Remove(@params.textDocument.uri);
-            Logger.Instance.Log($"{@params.textDocument.uri} closed.");
-        }
-
-        protected override void DidChangeConfiguration(DidChangeConfigurationParams @params)
-        {
-            _maxNumberOfProblems = @params?.settings?.languageServerExample?.maxNumberOfProblems ?? 100;
-            foreach (var document in _documents.All)
+            if (hasConfigurationCapability)
             {
-                ValidateTextDocument(document);
-            }
-        }
-
-        private void ValidateTextDocument(TextDocumentItem document)
-        {
-            var diagnostics = new List<Diagnostic>();
-            var lines = document.text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
-            var problems = 0;
-            for (var i = 0; i < lines.Length && problems < _maxNumberOfProblems; i++)
-            {
-                var line = lines[i];
-                var index = line.IndexOf("typescript");
-                if (index >= 0)
+                proxy.Client.RegisterCapability(new LanguageServer.Parameters.Client.RegistrationParams
                 {
-                    problems++;
-                    diagnostics.Add(new Diagnostic
+                    registrations = new[]
                     {
-                        severity = DiagnosticSeverity.Warning,
-                        range = new Range
+                        new Registration
                         {
-                            start = new Position { line = i, character = index },
-                            end = new Position { line = i, character = index + 10 }
-                        },
-                        message = $"{line.Substring(index, 10)} should be spelled TypeScript",
-                        source = "ex"
-                    });
-                }
+                            id = Guid.NewGuid().ToString(),
+                            method = "workspace/didChangeConfiguration"
+                        }
+                    }
+                });
             }
-            Proxy.TextDocument.PublishDiagnostics(new PublishDiagnosticsParams
+
+            if (hasWorkspaceFolderCapability)
             {
-                uri = document.uri,
+                connection.NotificationHandlers.Set<NotificationMessage<DidChangeWorkspaceFoldersParams>>("workspace/didChangeWorkspaceFolders", OnDidChangeWorkspaceFolders);
+            }
+        }
+
+        private void OnDidChangeWorkspaceFolders(NotificationMessage<DidChangeWorkspaceFoldersParams> message)
+        {
+            Console.Error.WriteLine("Workspace folder change event received.");
+        }
+
+        private void OnDidChangeConfiguration(NotificationMessage<DidChangeConfigurationParams> message)
+        {
+            var change = message.@params;
+            if (hasConfigurationCapability)
+            {
+                // Reset all cached document settings
+                documentSettings.Clear();
+            }
+            else
+            {
+                globalSettings = ExampleSettings.Create(change?.settings);
+            }
+
+            foreach (var doc in documents.All)
+            {
+                var ignore = ValidateTextDocument(doc);
+            }
+        }
+
+        private Task<ExampleSettings> GetDocumentSettings(Uri resource)
+        {
+            if (!hasConfigurationCapability)
+            {
+                return Task.FromResult(globalSettings);
+            }
+            var result = documentSettings[resource];
+            if (result == null)
+            {
+                result = GetDocumentSettingsInternal(resource);
+                documentSettings[resource] = result;
+            }
+            return result;
+        }
+
+        private async Task<ExampleSettings> GetDocumentSettingsInternal(Uri resource)
+        {
+            var response = await proxy.Workspace.Configuration(new ConfigurationParams
+            {
+                items = new[]
+                {
+                    new ConfigurationItem
+                    {
+                        scopeUri = resource,
+                        section = "languageServerExample"
+                    }
+                }
+            });
+            var settings = response.SuccessValue[0];
+            return ExampleSettings.Create(settings);
+        }
+
+        // Only keep settings for open documents
+        private void Documents_DidClose(object sender, TextDocumentChangedEventArgs e)
+        {
+            documentSettings.Remove(e.Document.Uri);
+        }
+
+        // The content of a text document has changed. This event is emitted
+        // when the text document first opened or when its content has changed.
+        private void Documents_DidChangeContent(object sender, TextDocumentChangedEventArgs e)
+        {
+            var ignore = ValidateTextDocument(e.Document);
+        }
+
+        private async Task ValidateTextDocument(TextDocument textDocument)
+        {
+            // In this simple example we get the settings for every validate run.
+            var settings = await documentSettings[textDocument.Uri];
+
+            // The validator creates diagnostics for all uppercase words length 2 and more
+            var text = textDocument.Text;
+            var pattern = new Regex("\\b[A-Z]{2,}\\b");
+
+            var diagnostics = new List<Diagnostic>();
+            var mc = pattern.Matches(text);
+            for (var problems = 0; problems < mc.Count && problems < settings.maxNumberOfProblems; problems++)
+            {
+                var m = mc[problems];
+                var diagnostic = new Diagnostic
+                {
+                    severity = DiagnosticSeverity.Warning,
+                    range = new Range
+                    {
+                        start = textDocument.PositionAt(m.Index),
+                        end = textDocument.PositionAt(m.Index + m.Length)
+                    },
+                    message = $"{m.Value} is all uppercase.",
+                    source = "ex"
+                };
+                if (hasDiagnosticRelatedInformationCapability)
+                {
+                    diagnostic.relatedInformation = new[]
+                    {
+                        new DiagnosticRelatedInformation
+                        {
+                            location = new Location
+                            {
+                                uri = textDocument.Uri,
+                                range = new Range
+                                {
+                                    start = diagnostic.range.start,
+                                    end = diagnostic.range.end
+                                }
+                            },
+                            message = "Spelling matters"
+                        },
+                        new DiagnosticRelatedInformation
+                        {
+                            location = new Location
+                            {
+                                uri = textDocument.Uri,
+                                range = new Range
+                                {
+                                    start = diagnostic.range.start,
+                                    end = diagnostic.range.end
+                                }
+                            },
+                            message = "Particularly for names"
+                        }
+                    };
+                }
+                diagnostics.Add(diagnostic);
+            }
+
+            // Send the computed diagnostics to VSCode.
+            proxy.TextDocument.PublishDiagnostics(new PublishDiagnosticsParams
+            {
+                uri = textDocument.Uri,
                 diagnostics = diagnostics.ToArray()
             });
         }
 
-        protected override void DidChangeWatchedFiles(DidChangeWatchedFilesParams @params)
-        {
-            Logger.Instance.Log("We received an file change event");
-        }
+        // connection.onDidChangeWatchedFiles
 
-        protected override Result<CompletionResult, ResponseError> Completion(CompletionParams @params)
-        {
-            var array = new[]
-            {
-                new CompletionItem
-                {
-                    label = "TypeScript",
-                    kind = CompletionItemKind.Text,
-                    data = 1
-                },
-                new CompletionItem
-                {
-                    label = "JavaScript",
-                    kind = CompletionItemKind.Text,
-                    data = 2
-                }
-            };
-            return Result<CompletionResult, ResponseError>.Success(array);
-        }
+        // This handler provides the initial list of the completion items.
+        // connection.onCompletion
 
-        protected override Result<CompletionItem, ResponseError> ResolveCompletionItem(CompletionItem @params)
-        {
-            if (@params.data == 1)
-            {
-                @params.detail = "TypeScript details";
-                @params.documentation = "TypeScript documentation";
-            }
-            else if (@params.data == 2)
-            {
-                @params.detail = "JavaScript details";
-                @params.documentation = "JavaScript documentation";
-            }
-            return Result<CompletionItem, ResponseError>.Success(@params);
-        }
+        // This handler resolve additional information for the item selected in
+        // the completion list.
+        // connection.onCompletionResolve
 
-        protected override VoidResult<ResponseError> Shutdown()
-        {
-            Logger.Instance.Log("Language Server is about to shutdown.");
-            // WORKAROUND: Language Server does not receive an exit notification.
-            Task.Delay(1000).ContinueWith(_ => Environment.Exit(0));
-            return VoidResult<ResponseError>.Success();
-        }
+        // https://github.com/Microsoft/vscode-extension-samples/blob/master/lsp-sample/server/src/server.ts
     }
 }

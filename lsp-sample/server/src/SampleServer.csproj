@@ -6,7 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="LanguageServerProtocol" Version="7.0.0" />
+    <PackageReference Include="LanguageServerProtocol" Version="7.0.1" />
   </ItemGroup>
 
 </Project>
