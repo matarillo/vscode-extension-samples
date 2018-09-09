@@ -96,7 +96,7 @@ namespace SampleServer
                 }
                 else
                 {
-                    low = mid;
+                    low = mid + 1;
                 }
             }
             // low is the least x for which the line offset is larger than the current offset

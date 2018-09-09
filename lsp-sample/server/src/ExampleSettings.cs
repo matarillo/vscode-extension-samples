@@ -13,7 +13,7 @@ namespace SampleServer
 
         public static ExampleSettings Create(dynamic settings)
         {
-            var maxNumberOfProblemsSent = settings?.languageServerExample?.maxNumberOfProblems;
+            var maxNumberOfProblemsSent = settings?.maxNumberOfProblems;
             return
                 (maxNumberOfProblemsSent != null)
                     ? new ExampleSettings((int)maxNumberOfProblemsSent)

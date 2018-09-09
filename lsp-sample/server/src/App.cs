@@ -105,6 +105,8 @@ namespace SampleServer
             {
                 connection.NotificationHandlers.Set<NotificationMessage<DidChangeWorkspaceFoldersParams>>("workspace/didChangeWorkspaceFolders", OnDidChangeWorkspaceFolders);
             }
+
+            Logger.Instance.Log("Initialized.");
         }
 
         private void OnDidChangeWorkspaceFolders(NotificationMessage<DidChangeWorkspaceFoldersParams> message)
@@ -137,8 +139,7 @@ namespace SampleServer
             {
                 return Task.FromResult(globalSettings);
             }
-            var result = documentSettings[resource];
-            if (result == null)
+            if (!documentSettings.TryGetValue(resource, out var result))
             {
                 result = GetDocumentSettingsInternal(resource);
                 documentSettings[resource] = result;
@@ -179,7 +180,7 @@ namespace SampleServer
         private async Task ValidateTextDocument(TextDocument textDocument)
         {
             // In this simple example we get the settings for every validate run.
-            var settings = await documentSettings[textDocument.Uri];
+            var settings = await GetDocumentSettings(textDocument.Uri);
 
             // The validator creates diagnostics for all uppercase words length 2 and more
             var text = textDocument.Text;

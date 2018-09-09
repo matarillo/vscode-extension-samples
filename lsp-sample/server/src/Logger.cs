@@ -34,6 +34,7 @@ namespace SampleServer
                 type = type,
                 message = message
             });
+            System.Console.Error.WriteLine(message);
         }
     }
 }
